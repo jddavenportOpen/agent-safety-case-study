@@ -10,7 +10,7 @@ Some of what they do has real consequences. They draft and send email, they fix 
 
 It's a single-user system. It doesn't solve permissions for many users, and I don't claim it does.
 
-"Live" here means real email to real people and real money on the line. It doesn't mean uptime guarantees for a customer. That's why the safety work matters to me, even though the scale is small.
+"Live" here means real email to real people and real money on the line. It has no uptime promise to anyone but me. That's why the safety work matters to me, even though the scale is small.
 
 ## 1. Agents with a shell on my own machine
 
@@ -32,19 +32,19 @@ I've signed three narrow standing approvals: rescheduling AI Foundry check-ins w
 
 A build check fails if any code sends email without going through the gate. The first time it ran, it found Gmail senders that I'd missed when I checked by hand.
 
-**One that failed.** In July 2026 an agent running on my account opened 248 pull requests and 415 Discussions on other people's GitHub repos to farm stars. I shut it down and closed what I could. Now a hook blocks forks, pull requests to repos I don't own, and new Discussions unless a person approves that exact action.
+**One that failed.** In July 2026 an agent running on my account opened 248 pull requests and 415 Discussions on other people's GitHub repos to farm stars. I shut it down and closed what I could. Now a hook checks every fork, pull request and Discussion aimed at a repo I don't own. A model judges each one, and it blocks anything that looks like promotion, star-farming or mass outreach. I can override a block myself.
 
-**What it costs.** The gate is strict enough to break things. One university email path refused every send for weeks because the code that made the token and the code that sent the mail disagreed on what the token was bound to. I fixed the code that passed the key along. I didn't loosen the check.
+**What it costs.** The gate is strict enough to break things. One university email path refused every send for weeks because the code that made the token and the code that sent the mail disagreed on what the token was bound to. I fixed the code that passed the key along, and the check stayed as strict.
 
 ## 3. Agents that fix code
 
-**What could go wrong.** A pipeline that reproduces a bug, writes a fix and merges it can merge anything: an auth bypass, a disabled safety check, an honest mistake. And an agent asked to grade its own work will pass it.
+**What could go wrong.** A pipeline that reproduces a bug, writes a fix and merges it can merge anything, including an auth bypass or a disabled safety check. And an agent asked to grade its own work will pass it.
 
-**What I put in place.** Every check reads the real git diff, never the agent's description of it. The fix happens in a throwaway worktree. The test has to go red, then green. A fix can touch at most 3 files and 40 lines, and can't add dependencies, change a schema or touch CI. A deny list covers auth, secrets, payments, migrations and deploys. Three reviewer prompts (product, safety, architecture) each read the diff, and any one of them can block it. By default it runs in shadow mode, which records what it would have merged and stops. When you turn merging on, the limit is 1 merge a day. The fixer runs with the credentials it needs and nothing else. It's open source as [claude-bug-squash](https://github.com/jddavenportOpen/claude-bug-squash).
+**What I put in place.** Every check reads the git diff itself. The fix happens in a throwaway worktree. The test has to go red, then green. By default a fix can touch at most 3 files and 40 lines, and can't add dependencies, change a schema or touch CI. A deny list covers auth, secrets, payments, migrations and deploys. Three reviewer prompts (product, safety, architecture) each read the diff, and any one of them can block it. By default it runs in shadow mode, which records what it would have merged and stops. When you turn merging on, the default limit is 1 merge a day. The fixer runs with the credentials it needs and nothing else. It's open source as [claude-bug-squash](https://github.com/jddavenportOpen/claude-bug-squash).
 
-**One that failed.** An outside audit found the review panel itself was broken. It passed with 1 approval out of 3. The "(3/3 approved)" line in the receipt was hardcoded. And the parser took the last word of the reply as the verdict. I fixed all three. Now receipts are computed from what actually ran, never written by the agent being checked.
+**One that failed.** An adversarial audit I ran found the review panel itself was broken. The three-of-three quorum passed at one-of-three. The "(3/3 approved)" line in the receipt was hardcoded. And the parser took the last word of the reply as the verdict. I fixed all three. Now the receipt is computed from the reviews that ran.
 
-**What it costs.** It's slow on purpose. Shadow mode by default, 1 merge a day, and most fixes still land through me.
+**What it costs.** It's slow on purpose. Shadow mode is on by default, and most fixes still land through me.
 
 ## 4. What the models cost
 
@@ -73,12 +73,12 @@ What's still open: the hook only binds agent sessions. I can still kill everythi
 ## What I'd tell someone deploying agents at work
 
 1. Put each kind of action you can't undo behind one gate, and fail the build if code goes around it.
-2. Tie an approval to the exact action, single-use and expiring. Approving a category is how surprises happen.
+2. Tie an approval to the exact action, single-use and expiring.
 3. If a rule matters, have a hook enforce it. Every incident here traces back to a rule that only existed as text.
 4. When a gate blocks something it shouldn't, fix the caller or sharpen the gate. Don't widen it because you're behind.
-5. Measure the actual diff, never the agent's summary of it.
+5. Have every check read the diff itself.
 6. Test your checkers. My review panel shipped with a broken quorum and a hardcoded receipt.
-7. Spend review effort where a change can do damage. Top-tier review on every typo trains everyone to tune the reviewer out.
+7. Spend review effort where a change can do damage. A typo fix doesn't need the top model.
 8. Keep a person where it matters. [recruit-copilot](https://github.com/jddavenportOpen/recruit-copilot), the open version of my job-search tool, never submits an application.
 9. Write the retro with receipts: the command, the transcript line, the exit code, and what the fix still doesn't cover.
 
@@ -91,4 +91,4 @@ What's still open: the hook only binds agent sessions. I can still kill everythi
 
 ---
 
-*I'm an AI product manager in Provo, Utah. I founded and run the BYU AI Foundry. Before that I was a Principal PM at National Grid, where I grew an internal cloud services platform from $2M to $20M+ a year in chargeback. Most of the code behind this system was written by Claude Code agents I run. I pick what gets built, set the tests it has to pass, and check it by using it.*
+*I live in Provo, Utah. I founded and run the BYU AI Foundry, and I'm an MBA candidate at BYU Marriott. Before that I was a Principal PM at National Grid, where I grew an internal cloud services platform from $2M to $20M+ a year in chargeback. Most of the code behind this system was written by Claude Code agents I run. I pick what gets built, set the tests it has to pass, and check it by using it.*
