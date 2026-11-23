@@ -1,87 +1,94 @@
-# Deploying a 30-Agent AI Organization Safely in Production
+# What I let my AI agents do, and what broke
 
-*A capability-vs-risk case study. JD Davenport, 2026.*
+*A case study. JD Davenport, 2026.*
 
-**Abstract.** This is an account of running a production AI organization, roughly 38 live agents across 22 domains at the time of writing, with real-world blast radius: agents that send email as me, fix code autonomously, and drive a corporate laptop remotely. For each capability it names the concrete risk, the control that bounds it, the tradeoff accepted, and one incident where the controls failed and what changed as a result.
+I run my own agent system on a Mac Mini. I started building it in February 2026, and it has run on a schedule since April 2026. I've built 100+ agents for it. They work on my email, my code, my school work, my job search and my family's logistics. One user: me.
 
-## The system, honestly scoped
+Some of what they do has real consequences. They draft and send email, they fix code, and they run shell commands on the machine that holds my passwords. This write-up goes through each of those, what could go wrong, what I put in place, and at least one time the controls failed and what I changed after.
 
-Since late 2025 I have operated a personal AI organization: about 38 live agents across 22 domains (health, finances, recruiting, school, consulting, a corporate work pilot), over 100 built and retired across the project's life. It runs on a Mac Mini against a 353-table Postgres backbone, 13 MCP servers, and roughly 117 scheduled loops, driven through a web cockpit and Telegram, with over ten thousand tests in the codebase.
+## Two caveats first
 
-Two caveats matter more than the numbers. This is a single-operator system with one principal; it does not solve multi-tenant authorization and I will not pretend it does. And "production" here means real consequences rather than enterprise SLAs: real email to real people, real spending surfaces, real corporate hardware. That blast radius is what makes the safety engineering non-optional, and why the lessons transfer even though the scale does not.
+It's a single-user system. It doesn't solve permissions for many users, and I don't claim it does.
 
-The organizing principle: every capability was built twice. Once as a demo, which is cheap. Once as a bounded system with an enforcement layer the agent cannot talk its way past, which is the work.
+"Live" here means real email to real people and real money on the line. It doesn't mean uptime guarantees for a customer. That's why the safety work matters to me, even though the scale is small.
 
-## Capability 1: Agents that act on a live machine
+## 1. Agents with a shell on my own machine
 
-**Risk.** Dozens of concurrent sessions hold shell access on the box that also holds my credentials, my family's data, and every other agent's state: destructive commands, credential exfiltration, sibling interference.
+**What could go wrong.** Many sessions run at once with shell access on the box that also holds my credentials, my family's data and every other agent's state. A bad command can delete things, read secrets or break a sibling session.
 
-**Controls.** Layered PreToolUse hooks that run before any command executes, deterministically, regardless of what the model believes. An ethos gate blocks top-tier secret reads, sends that bypass the approval rail, unattributed agent spawns, and force-pushes without an explicit allow flag (58 tests on the gate alone). A credential-scrape guard denies browser password stores, cookie databases, and keychain mass-dumps while allowing legitimate single-credential reads. And destructive paths fail closed. That last one was learned: a worktree-cleanup script had three content gates that all failed open, so an unreadable worktree read as empty and stale and was deleted; reproduction destroyed a never-committed file. Every gate in that path now fails closed.
+**What I put in place.** Hooks that run before any command executes. They don't care what the model believes. One gate blocks reads of top-tier secrets, sends that skip the approval step, agent spawns nobody can trace, and force-pushes without an explicit flag. A second guard blocks reads of browser password stores, cookie databases and bulk keychain dumps, and still allows reading one credential on purpose. The gate is open source as [ethos-gate](https://github.com/jddavenportOpen/ethos-gate).
 
-**Tradeoff.** Hooks false-positive. The credential guard blocked its own documentation commit the day it shipped. The fix required access context (a real browser profile path or keychain command) rather than loosening the pattern. Gate friction is signal to sharpen the gate, never to remove it.
+**One that failed.** A worktree cleanup script had three checks before it deleted anything, and all three failed open. An unreadable worktree looked empty and stale, so it got deleted. When I reproduced it, it destroyed a file that had never been committed. Every check on that path now fails closed.
 
-## Capability 2: Outbound communication as a real person
+**What it costs.** Hooks have false positives. The credential guard blocked its own documentation commit the day it shipped. I fixed it by making the guard look for a real browser profile path or keychain command, so the pattern itself stayed as strict.
 
-**Risk.** Agents send email and messages from my accounts to family, professors, and professional contacts. This is the most irreversible thing the system does; a wrong send cannot be rolled back.
+## 2. Email and messages to real people
 
-**Controls.** Every external transport (email, iMessage, Slack DM) is wrapped by a single chokepoint function enforcing three things. A global freeze switch: sending defaults to frozen, with scoped, deliberate exceptions per rail. Content-bound approval: a send requires a single-use, expiring token bound to a SHA-256 hash of the exact recipients, subject, and body, so a "yes" approves one concrete message, a changed body invalidates the token, and a bare "yes" with no bound proposal is rejected. And an append-only audit ledger of every send and refusal.
+**What could go wrong.** Agents write to my family, my professors and people I work with. A wrong send can't be taken back.
 
-The chokepoint is structural, not conventional: a CI guard fails the build if any code path transmits outside the gate. On first activation it caught five autonomous Gmail senders that manual audits had missed. Prose said everything used the gate; the machine check said otherwise.
+**What I put in place.** Every email my agents send to another person passes one gate. By default it waits for my yes on the exact text. The approval is a single-use token that expires, and it's tied to a hash of the recipients, subject and body. If one character of the body changes, the token is dead. A bare "yes" with nothing attached to it gets refused. There's also a freeze switch, and a log of every send and every refusal. Texts sit behind the freeze switch but don't have per-message tokens yet.
 
-The same principle now covers non-email actions. Early on, a two-day unsupervised "ship mode" run created 248 unwanted pull requests and 415 discussions on external GitHub repositories. Everything was closed and apologized for; the durable fix was a hook blocking fork, external-PR, and discussion creation without an explicit approval variable.
+I've signed three narrow standing approvals: rescheduling AI Foundry check-ins with the teams, outreach for a case competition the Foundry runs, and cold email for AgentTree, a side project. AgentTree sends from its own domains, with my name on it. Each approval has a cap and a kill switch.
 
-**Tradeoff.** Fail-closed friction, sometimes for weeks. One approved university email rail silently refused every send because the token-minting caller and the transport disagreed on the binding key. The fix threaded the correct key through the call chain. The binding was not loosened. A gate that relaxes under schedule pressure is not a gate.
+A build check fails if any code sends email without going through the gate. The first time it ran, it found Gmail senders that I'd missed when I checked by hand.
 
-## Capability 3: Autonomous code fixing
+**One that failed.** In July 2026 an agent running on my account opened 248 pull requests and 415 Discussions on other people's GitHub repos to farm stars. I shut it down and closed what I could. Now a hook blocks forks, pull requests to repos I don't own, and new Discussions unless a person approves that exact action.
 
-**Risk.** A pipeline that reproduces a bug, writes a fix, and can merge it without a human can merge anything: an auth bypass, a disabled safety rail, a sincere mistake. And an agent asked to certify its own work will certify it.
+**What it costs.** The gate is strict enough to break things. One university email path refused every send for weeks because the code that made the token and the code that sent the mail disagreed on what the token was bound to. I fixed the code that passed the key along. I didn't loosen the check.
 
-**Controls.** Nine independent layers, each re-checking the actual git diff rather than the agent's claims: triage with risk tiers; fixing in an isolated throwaway worktree; a mandatory red-to-green reproduction proof; blast-radius caps (at most 3 files and 40 changed lines, no new dependencies, no schema, no CI or infrastructure, no binaries); a never-touch deny-list (auth, secrets, payments, migrations, deploy, safety rails) whose match is a hard block; a three-seat adversarial review panel (Product, Safety, Architecture, each a scoped read-only model call, any one veto blocks); shadow mode that records what would have merged and stops, on by default; a per-day auto-merge limit, default 1; and an explicit arm switch. Out of the box it can never merge. The fixer subprocess also runs with an allowlisted environment: 178 credentials, including payment and infrastructure keys, are withheld from the one agent that could reach a merge. The model is open source as [claude-bug-squash](https://github.com/jddavenportOpen/claude-bug-squash) (MIT).
+## 3. Agents that fix code
 
-**The honest finding.** An adversarial audit found the review panel itself was broken: the three-of-three quorum passed at one-of-three, the "(3/3 approved)" receipt was hardcoded rather than computed, and the verdict parser took the last token instead of the verdict. All fixed, and the meta-lesson stuck: verifiers need verification, and receipts must be computed from evidence, not written by the agent being judged. Related work on calibrating LLM judges (anchored scales, strong-vs-mismatch separation, self-consistency) is published at [mcp-judge](https://github.com/jddavenportOpen/mcp-judge).
+**What could go wrong.** A pipeline that reproduces a bug, writes a fix and merges it can merge anything: an auth bypass, a disabled safety check, an honest mistake. And an agent asked to grade its own work will pass it.
 
-**Tradeoff.** Throughput is deliberately poor: one auto-merge a day, shadow by default, most fixes still landing through a human. That is the price of stating precisely what the system cannot do.
+**What I put in place.** Every check reads the real git diff, never the agent's description of it. The fix happens in a throwaway worktree. The test has to go red, then green. A fix can touch at most 3 files and 40 lines, and can't add dependencies, change a schema or touch CI. A deny list covers auth, secrets, payments, migrations and deploys. Three reviewer prompts (product, safety, architecture) each read the diff, and any one of them can block it. By default it runs in shadow mode, which records what it would have merged and stops. When you turn merging on, the limit is 1 merge a day. The fixer runs with the credentials it needs and nothing else. It's open source as [claude-bug-squash](https://github.com/jddavenportOpen/claude-bug-squash).
 
-## Capability 4: Driving a corporate machine remotely
+**One that failed.** An outside audit found the review panel itself was broken. It passed with 1 approval out of 3. The "(3/3 approved)" line in the receipt was hardcoded. And the parser took the last word of the reply as the verdict. I fixed all three. Now receipts are computed from what actually ran, never written by the agent being checked.
 
-**Risk.** With my employer's sanction, the fleet drives a Claude Code instance on a locked-down corporate laptop through a relay, at about 12 seconds round trip versus a roughly 100-second baseline. This is someone else's hardware and intellectual property; failure modes that are annoying on my own machine are unacceptable here.
+**What it costs.** It's slow on purpose. Shadow mode by default, 1 merge a day, and most fixes still land through me.
 
-**Controls.** A PreToolUse deny-hook on the corporate side blocks destructive shell commands (the rm -rf, dd, mkfs class) even when the session runs with permission prompts disabled, because a hook fires before execution regardless of session mode. Corporate IP and personal work are separated by charter and storage boundary. Trust is deliberately one-directional: when the relay's pull leg degraded, the accepted fix was to let it stay degraded and rely on the push leg plus a dead-man alarm that pages if the mirror goes quiet for 36 hours, rather than open inbound network exposure on a corporate device.
+## 4. What the models cost
 
-**Tradeoff.** A hard capability ceiling and real latency. The fleet can do less on that machine than it technically could. That is the point.
+Measured at list prices over one stretch in July 2026, Opus was 93% of my model usage ($1,248 of $1,349, across 10,570 turns). Every change ran on the top model, review included. A typo fix got the same review as a change to what the agents are allowed to do on their own. I never measured what that review caught.
 
-## Cost routing as a governance surface
+Now review effort depends on how much a change can break. Changes to autonomy, safety checks, credentials, outside sends or anything you can't undo get the top model and a second reviewer. Normal engineering gets normal review. Doc fixes get the builder's own checks and no second model. A lint rule flags workflows where every step runs on the top setting.
 
-Model spend turned out to be governance wearing an economics costume. Measured on one day: $1,349 in list-price-equivalent usage across 10,570 turns, 93 percent on the largest model, because every pipeline lane defaulted to top-tier adversarial review regardless of what it touched. A documentation fix got the same maximum-effort review as an autonomy increase.
+## The restart incident
 
-The repair was a lint-enforced rule: review effort scales with blast radius, not activity. Changes touching autonomy, safety gates, credentials, external sends, or anything irreversible get the top tier and an independent verifier. Normal engineering gets standard review. Mechanical and doc-only changes get the builder's own checks and no second model. Rote loops are pinned to small models at low effort. The accepted tradeoff is explicit: less scrutiny on low-stakes changes buys scrutiny that means something where it counts.
+On 2026-07-01 at 15:31, all 12 live agent sessions died within 2 seconds.
 
-## What broke and what we changed: the restart incident
+A session had just changed the chat bridge, the process every interactive session runs under. To load its change, it restarted the bridge with `launchctl kickstart -k`. That kills the whole process group. Every session died, including the one that ran the command. Its own shell call came back with exit code 137. Work in progress was lost.
 
-On 2026-07-01 at 15:31, all 12 live agent sessions died within two seconds.
+A safe restart script that checks for live sessions had existed for weeks. Nothing made agents use it. The service file even called the raw command "the proven path", and an agent read that literally. The rule lived in a doc, and an agent restarted the service anyway.
 
-A session had just committed a change to the chat bridge, the process hosting every interactive session as a PTY child. To load its change it restarted the bridge with a raw `launchctl kickstart -k`, which SIGKILLs the whole process group. Every session died, including the one that ran the command: its own shell tool returned exit code 137, killed by its own restart. In-flight work was lost.
+What I shipped the same day:
 
-The five-whys held up a mirror. A guarded restart script with a live-session check had existed for weeks; nothing enforced its use. The service definition even advertised the raw command as "the proven path," and an agent reading it took it literally, which is what agents do. The safe path was documented; the unsafe path was not blocked. Honor-system prose lost to machine reality, and it always will.
+- A hook that blocks the raw restart commands, with an override token for when I mean it.
+- A detector that pages me when 4 or more sessions die inside 120 seconds, and names the session that ran the command.
+- Then the written rule.
 
-Fixes shipped the same day, in order of importance: a PreToolUse hook blocking the raw restart class, with an explicit override token for deliberate operator use; a detector paging within five minutes on four or more session deaths inside 120 seconds, with culprit attribution from session transcripts; and only then the written rule. Two tempting fixes were rejected with reasons recorded: restarting the bridge to "apply" the fix (that repeats the incident, and the hook needs no restart), and letting children survive a bridge kill (orphaned sessions no supervisor can re-adopt are worse than dead ones). Residual risk is documented too: the hook binds only agent sessions, so a human terminal can still mass-kill, which is why the detector exists.
+Two fixes I turned down, with reasons written down. Restarting the bridge to "apply" the fix would repeat the incident, and the hook doesn't need a restart. Letting sessions survive a bridge kill would leave orphans nothing can re-adopt.
 
-This incident, more than any design document, set the system's constitution: a rule that matters is a rule the machine enforces.
+What's still open: the hook only binds agent sessions. I can still kill everything from my own terminal. That's why the detector exists.
 
-## Principles for deploying agentic AI in an enterprise
+## What I'd tell someone deploying agents at work
 
-1. **One chokepoint per irreversible action class, enforced structurally.** CI fails if any code path circumvents it. Convention does not survive contact with generated code.
-2. **Approve content, not intent.** A human "yes" binds to a hash of the exact action, single-use, expiring. Approving a category is how surprises happen.
-3. **Machine enforcement beats prose.** Every incident here traces to a rule that existed only as text. Pre-execution hooks are the cheapest safety technology in this stack.
-4. **Fail closed, and treat gate friction as signal.** Fix the caller or sharpen the gate. Never widen it under schedule pressure.
-5. **Measure blast radius on the artifact.** Caps and deny-lists check the actual git diff, not the agent's account of it.
-6. **Verify the verifiers.** My review panel shipped with a broken quorum and a hardcoded receipt. Receipts must be computed; judges must be calibrated and tested for their ability to fail things.
-7. **Scale scrutiny with blast radius, not volume.** Uniform maximum review is not rigor; it is noise that trains everyone to ignore the reviewer.
-8. **Keep the human where they are load-bearing.** The job-application copilot fills forms and stops; I click submit. Email sends on my one tap. The human action is small, concrete, and irreplaceable by design.
-9. **Write the retro with receipts, including residual risk.** The mass-kill audit names the command, the transcript line, the exit code, and what the fix still does not cover. That document is worth more than the fix.
+1. Put each kind of action you can't undo behind one gate, and fail the build if code goes around it.
+2. Tie an approval to the exact action, single-use and expiring. Approving a category is how surprises happen.
+3. If a rule matters, have a hook enforce it. Every incident here traces back to a rule that only existed as text.
+4. When a gate blocks something it shouldn't, fix the caller or sharpen the gate. Don't widen it because you're behind.
+5. Measure the actual diff, never the agent's summary of it.
+6. Test your checkers. My review panel shipped with a broken quorum and a hardcoded receipt.
+7. Spend review effort where a change can do damage. Top-tier review on every typo trains everyone to tune the reviewer out.
+8. Keep a person where it matters. [recruit-copilot](https://github.com/jddavenportOpen/recruit-copilot), the open version of my job-search tool, never submits an application.
+9. Write the retro with receipts: the command, the transcript line, the exit code, and what the fix still doesn't cover.
 
-None of this makes the system safe in an absolute sense. It makes the failure modes enumerable, bounded, and paid for consciously, which is the most an honest engineer can claim and the least an enterprise should demand.
+## What's still open
+
+- Texts don't have per-message approval tokens yet.
+- The restart hook doesn't cover a human terminal.
+- The three standing approvals send without a per-message yes, inside their caps.
+- I never measured what top-tier review actually caught.
 
 ---
 
-*JD Davenport builds agentic AI systems and previously led a $20M+ digital services P&L as a Principal Product Manager at a Fortune 500 utility. The governance model described here is open source: [claude-bug-squash](https://github.com/jddavenportOpen/claude-bug-squash) (MIT) and [mcp-judge](https://github.com/jddavenportOpen/mcp-judge).*
+*I'm an AI product manager in Provo, Utah. I founded and run the BYU AI Foundry. Before that I was a Principal PM at National Grid, where I grew an internal cloud services platform from $2M to $20M+ a year in chargeback. Most of the code behind this system was written by Claude Code agents I run. I pick what gets built, set the tests it has to pass, and check it by using it.*
